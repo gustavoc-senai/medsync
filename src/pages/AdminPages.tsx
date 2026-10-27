@@ -1,4 +1,4 @@
-﻿import { useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { User } from "@supabase/supabase-js";
@@ -15,6 +15,15 @@ import {
 import { supabase } from "../lib/supabase";
 import type { ClinicalRecord } from "../components/Overview";
 import { StatusBadge } from "../components/ui/Brand";
+interface MedSyncPlan {
+  code: string;
+  name: string;
+  monthly_price_cents: number;
+  max_professionals: number;
+  max_units: number;
+  max_users: number;
+}
+
 const money = (n: number) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 export const extraPageTitles: Record<string, string> = {
@@ -54,13 +63,13 @@ export default function AdminPages({
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [error, setError] = useState("");
-  const plans = useQuery({
+  const plans = useQuery<MedSyncPlan[]>({
     queryKey: ["plans"],
     enabled: page === "minha-clinica",
     queryFn: async () => {
       const { data, error } = await supabase.rpc("medsync_list_plans");
       if (error) throw error;
-      return data;
+      return (data ?? []) as MedSyncPlan[];
     },
   });
   const subscription = useQuery({
