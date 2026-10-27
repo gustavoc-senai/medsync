@@ -46,16 +46,17 @@ Os perfis são lidos do banco. Após o login, a aplicação redireciona para o p
 A configuração existente usa `organizations`, `organization_members`, `clinic_units`, `medsync_records`, `medsync_memberships`, `medsync_invitations` e as funções administrativas já instaladas no projeto. A criação inicial continua chamando `create_clinic(p_name, p_unit_name)`.
 
 1. Execute **`supabase/migrations/202610220004_portals.sql`** no SQL Editor. A migração pressupõe que a estrutura dos cadastros e convites das etapas anteriores esteja instalada. Ela pode ser executada novamente sem excluir os dados.
-2. O paciente ou profissional aceita o convite e define a senha pelo e-mail.
-3. Como administrador, cadastre a pessoa em Pacientes ou Profissionais.
-4. Em **Usuários e convites → Usuários vinculados à clínica**, associe a conta ao cadastro correto.
-5. Ao entrar, o convidado será direcionado para o portal do seu perfil. Sem vínculo, nenhuma informação clínica é liberada.
+2. O administrador pode cadastrar a pessoa em Pacientes ou Profissionais antes ou depois do aceite do convite, usando o mesmo e-mail da conta.
+3. Após aceitar o convite, a conta é associada automaticamente quando há um único cadastro ativo com esse e-mail na clínica. Se o cadastro for criado depois, o vínculo também é feito automaticamente. Cadastros duplicados ou com e-mails diferentes precisam de revisão em **Usuários e convites → Usuários vinculados à clínica**.
+4. Ao entrar, o convidado será direcionado para o portal do seu perfil. Sem correspondência única, nenhuma informação clínica é liberada até a revisão.
+
+Para instalações existentes, aplique também as migrações 0005, 0006, 0007 e 0008 conforme [atualizacao-acessos.md](docs/atualizacao-acessos.md). A 0007 permite que membros autenticados leiam as clínicas às quais já pertencem, para abrir o portal; a 0008 associa contas e cadastros automaticamente pelo e-mail.
 
 A migração foi validada em PostgreSQL local isolado. **Não foi aplicada remotamente por este trabalho.** Ela não redefine senhas nem altera administradores, credenciais ou configurações de SMTP.
 
-Pacientes leem o próprio cadastro e registros relacionados permitidos; não recebem acesso ao prontuário de evolução. Profissionais leem pacientes associados às suas consultas e os registros clínicos atribuídos a eles. A recepção não tem acesso aos registros clínicos. Os controles estão em RLS e funções do banco, além da navegação da aplicação.
+Pacientes leem o próprio cadastro e registros relacionados permitidos; não recebem acesso ao prontuário de evolução. Pagamentos aparecem no portal somente quando associados ao cadastro correto do paciente. Profissionais leem pacientes associados às suas consultas e os registros clínicos atribuídos a eles. A recepção não tem acesso aos registros clínicos. Os controles estão em RLS e funções do banco, além da navegação da aplicação.
 
-Registros clínicos novos exigem a seleção do profissional responsável. Para tornar um registro antigo visível no portal do profissional, o administrador precisa atribuí-lo explicitamente. Pagamentos podem ser associados a um paciente para aparecer no portal correspondente. Não há correspondência automática por nome ou e-mail.
+Registros clínicos novos exigem a seleção do profissional responsável. Para tornar um registro antigo visível no portal do profissional, o administrador precisa atribuí-lo explicitamente. Novos pagamentos exigem a seleção do paciente; lançamentos antigos sem `patient_id` não podem ser associados com segurança automaticamente e precisam ser conferidos. Não há correspondência automática por nome ou e-mail para lançamentos financeiros.
 
 ## Convites e e-mails
 

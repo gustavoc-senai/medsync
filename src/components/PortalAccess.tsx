@@ -85,7 +85,7 @@ export default function PortalAccess({
         <div>
           <h2>Usuários vinculados à clínica</h2>
           <p>
-            Associe a conta ao cadastro correto para liberar os dados do portal.
+            O vínculo é feito automaticamente quando o e-mail do cadastro corresponde ao da conta. Se houver mais de um cadastro com esse e-mail, confira e associe o correto abaixo.
           </p>
         </div>
         <button type="button" className="button button-secondary" disabled={members.isFetching || recordsLoading}

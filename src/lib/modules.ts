@@ -132,7 +132,7 @@ export const modules: Record<string, Module> = {
   },
   pagamentos: {
     title: "Pagamentos",
-    description: "Registro de recebimentos da clínica.",
+    description: "Registro de recebimentos da clínica associado ao paciente correspondente.",
     fields: [
       name,
       { key: "amount", label: "Valor (R$)", type: "number", required: true },
@@ -261,6 +261,7 @@ Object.values(modules)
   );
 modules.pagamentos.fields.splice(1, 0, {
   key: "patient_id",
-  label: "Paciente (para exibir no portal)",
+  label: "Paciente (obrigatório para exibir no portal)",
   type: "patient",
+  required: true,
 });

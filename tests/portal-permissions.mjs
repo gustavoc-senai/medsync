@@ -19,6 +19,9 @@ const ids = {
   availability: "20000000-0000-4000-8000-000000000009",
   otherAvailability: "20000000-0000-4000-8000-000000000010",
   document: "20000000-0000-4000-8000-000000000011",
+  patientPayment: "20000000-0000-4000-8000-000000000012",
+  otherPatientPayment: "20000000-0000-4000-8000-000000000013",
+  unassignedPayment: "20000000-0000-4000-8000-000000000014",
 };
 await db.exec(
   `create role anon;create role authenticated;create schema auth;create table auth.users(id uuid primary key,email text,raw_user_meta_data jsonb default '{}'::jsonb);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;create schema storage;create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text);create table public.organizations(id uuid primary key,name text);create table public.organization_members(organization_id uuid,user_id uuid,role text);create table public.medsync_memberships(organization_id uuid,user_id uuid,role text);create table public.medsync_records(id uuid primary key default gen_random_uuid(),organization_id uuid references public.organizations(id),module text,payload jsonb,created_at timestamptz default now());alter table public.medsync_records enable row level security;create function public.medsync_is_admin(target uuid) returns boolean language sql stable security definer set search_path='' as $$select exists(select 1 from public.organization_members where organization_id=target and user_id=auth.uid() and role='owner')$$;create policy admin_read on public.medsync_records for select to authenticated using(public.medsync_is_admin(organization_id));create policy admin_write on public.medsync_records for all to authenticated using(public.medsync_is_admin(organization_id)) with check(public.medsync_is_admin(organization_id));`,
@@ -140,6 +143,26 @@ await record(ids.note, ids.org, "prontuario", {
   date: "2099-12-01",
   notes: "Private note",
 });
+await record(ids.patientPayment, ids.org, "pagamentos", {
+  patient_id: ids.p1,
+  name: "Consulta",
+  amount: "100",
+  date: "2099-12-01",
+  status: "Pendente",
+});
+await record(ids.otherPatientPayment, ids.org, "pagamentos", {
+  patient_id: ids.p2,
+  name: "Consulta",
+  amount: "200",
+  date: "2099-12-01",
+  status: "Pendente",
+});
+await record(ids.unassignedPayment, ids.org, "pagamentos", {
+  name: "Lançamento sem paciente",
+  amount: "300",
+  date: "2099-12-01",
+  status: "Pendente",
+});
 await record(
   "20000000-0000-4000-8000-000000000007",
   ids.otherOrg,
@@ -193,7 +216,10 @@ await assert.rejects(() =>
   ]),
 );
 await asUser(ids.patient);
-assert.deepEqual(await visible(), [ids.p1, ids.a1, ids.document].sort());
+assert.deepEqual(
+  await visible(),
+  [ids.p1, ids.a1, ids.document, ids.patientPayment].sort(),
+);
 assert.equal(
   (
     await db.query("select name from storage.objects")
@@ -201,6 +227,10 @@ assert.equal(
   true,
 );
 await asUser(ids.otherPatient);
+const otherPatientRecords = await visible();
+assert(otherPatientRecords.includes(ids.otherPatientPayment));
+assert(!otherPatientRecords.includes(ids.patientPayment));
+assert(!otherPatientRecords.includes(ids.unassignedPayment));
 assert.equal((await db.query("select name from storage.objects")).rows.length, 0);
 await asUser(ids.patient);
 await assert.rejects(() =>
