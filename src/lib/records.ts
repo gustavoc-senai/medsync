@@ -20,6 +20,7 @@ export async function fetchOrganizationRecords(
       .select("*")
       .eq("organization_id", organizationId)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .range(offset, offset + pageSize - 1);
     if (error) throw error;
     records.push(...(data as RecordRow[]));
@@ -35,13 +36,19 @@ export async function fetchOrganizationInvitations(organizationId: string) {
     role: string;
     status: string;
     created_at: string;
+    record_id?: string | null;
+    invited_user_id?: string | null;
+    expires_at?: string;
+    cancelled_at?: string | null;
+    last_sent_at?: string | null;
   }[] = [];
   for (let offset = 0; ; offset += pageSize) {
     const { data, error } = await supabase
       .from("medsync_invitations")
-      .select("id,email,full_name,role,status,created_at")
+      .select("id,email,full_name,role,status,created_at,record_id,invited_user_id,expires_at,cancelled_at,last_sent_at")
       .eq("organization_id", organizationId)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .range(offset, offset + pageSize - 1);
     if (error) throw error;
     invitations.push(...data);

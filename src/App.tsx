@@ -5,9 +5,10 @@ import AuthPage, { AuthGate } from "./pages/AuthPage";
 const WorkspacePage = lazy(() => import("./pages/WorkspacePage"));
 import CreateClinicPage from "./pages/CreateClinicPage";
 import OrganizationGate from "./components/OrganizationGate";
+import UnsavedChangesGuard from "./components/UnsavedChangesGuard";
 export default function App() {
   return (
-    <Suspense
+    <><UnsavedChangesGuard /><Suspense
       fallback={
         <div className="app-loading" role="status">
           <span className="loading-mark" />
@@ -88,6 +89,6 @@ export default function App() {
           }
         />
       </Routes>
-    </Suspense>
+    </Suspense></>
   );
 }

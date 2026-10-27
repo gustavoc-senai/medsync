@@ -89,6 +89,7 @@ export const modules: Record<string, Module> = {
         required: true,
       },
       { key: "service_id", label: "Serviço", type: "service" },
+      { key: "duration_minutes", label: "Duração em minutos", type: "number", required: true },
       {
         key: "starts_at",
         label: "Data e horário",

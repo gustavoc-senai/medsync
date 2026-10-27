@@ -34,36 +34,43 @@ Deno.serve(async (request: Request) => {
   const fullName = typeof input.full_name === 'string' ? input.full_name.trim() : ''
   const role = input.role
   const organizationId = input.organization_id
+  const recordId = input.record_id ?? null
+  if (recordId !== null && (typeof recordId !== 'string' || !/^[0-9a-f-]{36}$/i.test(recordId))) return reply(400, { error: 'Cadastro inválido.' })
   if (typeof organizationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(organizationId)
     || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || fullName.length < 2 || fullName.length > 120
     || !['patient','professional','receptionist'].includes(String(role))) return reply(400, { error: 'Confira nome, e-mail, clínica e perfil.' })
   const { data: memberships, error: memberError } = await admin.from('organization_members').select('role').eq('organization_id', organizationId).eq('user_id', auth.user.id)
   if (memberError) return reply(500, { error: 'Não foi possível verificar as permissões.' })
   if (!memberships?.some(m => ['owner','admin','administrator','super_admin'].includes(String(m.role).toLowerCase()))) return reply(403, { error: 'Somente administradores desta clínica podem convidar usuários.' })
-  let { data: invitation, error: insertError } = await admin.from('medsync_invitations').insert({ organization_id: organizationId, email, full_name: fullName, role, invited_by: auth.user.id }).select('id').single()
-  const resend = insertError?.code === '23505'
-  if (resend) {
-    // Reuse the pending invitation without changing its role or duplicating membership.
-    const { data: existing, error } = await admin.from('medsync_invitations')
-      .select('id, full_name, role').eq('organization_id', organizationId).eq('email', email)
-      .in('status', ['sending', 'sent', 'pending']).maybeSingle()
-    if (error || !existing) return reply(409, { error: 'Não foi possível localizar um convite pendente para reenviar. Atualize a lista e confira se a pessoa já aceitou.' })
-    if (existing.role !== role) return reply(409, { error: 'Já existe um convite pendente com outro perfil. Para reenviar, mantenha o perfil original.' })
-    invitation = existing
-  } else if (insertError) return reply(500, { error: 'Não foi possível registrar o convite. Confira a migração do banco.' })
+  const { data: invitation, error: prepareError } = await admin.rpc('medsync_prepare_invitation', {
+    p_actor: auth.user.id, p_organization_id: organizationId, p_email: email,
+    p_full_name: fullName, p_role: role, p_record_id: recordId,
+  })
+  if (prepareError) return reply(409, { error: prepareError.code === 'PGRST202'
+    ? 'Aplique a migração 202610270006_invitation_lifecycle.sql antes de enviar convites.'
+    : prepareError.message })
   if (!invitation) return reply(500, { error: 'Não foi possível localizar o convite.' })
-  const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo: `${appUrl.replace(/\/$/, '')}/aceitar-convite`, data: { full_name: fullName } })
+  const redirectTo = `${appUrl.replace(/\/$/, '')}/aceitar-convite?convite=${encodeURIComponent(invitation.id)}`
+  let { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo, data: { full_name: fullName } })
+  // A recipient may already have verified the email without finishing acceptance.
+  // Only send a recovery link for the identity recorded in this pending invitation.
+  if (inviteError && ['email_exists','user_already_exists'].includes(inviteError.code || '') && invitation.invited_user_id) {
+    const { data: identity, error: identityError } = await admin.auth.admin.getUserById(invitation.invited_user_id)
+    if (!identityError && identity.user?.email?.toLowerCase() === email) {
+      const { error: recoveryError } = await admin.auth.resetPasswordForEmail(email, { redirectTo })
+      inviteError = recoveryError
+      if (!recoveryError) invited = { user: identity.user }
+    }
+  }
   if (inviteError || !invited.user) {
     const code = inviteError?.code || 'invite_failed'
     const detail = inviteError?.message || 'O Auth não retornou o usuário convidado.'
     console.error('medsync_invitation_failed', { invitation_id: invitation.id, code, detail, status: inviteError?.status })
-    if (!resend) {
-      const { error: trackingError } = await admin.from('medsync_invitations').update({ status: 'failed' }).eq('id', invitation.id)
-      if (trackingError) console.error('medsync_invitation_tracking_failed', { invitation_id: invitation.id, code: trackingError.code })
-    }
+    const { error: trackingError } = await admin.rpc('medsync_finish_invitation', { p_id: invitation.id, p_user_id: null, p_success: false })
+    if (trackingError) console.error('medsync_invitation_tracking_failed', { invitation_id: invitation.id, code: trackingError.code })
     return reply(inviteError?.status === 429 ? 429 : 400, { error: `${invitationFailure(code)} Detalhe: ${code} — ${detail}`, code, detail })
   }
-  const { error: updateError } = await admin.from('medsync_invitations').update({ status: 'sent', invited_user_id: invited.user.id }).eq('id', invitation.id).in('status', ['sending', 'sent', 'pending'])
+  const { error: updateError } = await admin.rpc('medsync_finish_invitation', { p_id: invitation.id, p_user_id: invited.user.id, p_success: true })
   if (updateError) return reply(500, { error: 'O e-mail foi solicitado, mas o vínculo do convite não foi salvo. Contate o administrador antes de tentar novamente.' })
-  return reply(200, { invitation_id: invitation.id, message: resend ? 'Convite reenviado. Peça à pessoa para abrir o e-mail mais recente.' : 'Convite enviado. O destinatário receberá um link para definir a senha.' })
+  return reply(200, { invitation_id: invitation.id, message: invitation.resend ? 'Convite reenviado. Peça à pessoa para abrir o e-mail mais recente.' : 'Convite enviado. O destinatário receberá um link para definir a senha.' })
 })

@@ -1,9 +1,11 @@
 ﻿import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link2, ShieldCheck } from "lucide-react";
+import { Link } from "react-router-dom";
+import { RefreshCw, ShieldCheck } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import type { ClinicalRecord } from "./Overview";
 import { Initials, StatusBadge } from "./ui/Brand";
+import PortalRoleControl from "./PortalRoleControl";
 type Member = {
   user_id: string;
   email: string;
@@ -14,14 +16,25 @@ type Member = {
 export default function PortalAccess({
   organizationId,
   records,
+  recordsLoading = false,
+  recordsError = false,
 }: {
   organizationId: string;
   records: ClinicalRecord[];
+  recordsLoading?: boolean;
+  recordsError?: boolean;
 }) {
   const cache = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const [pendingOnly, setPendingOnly] = useState(false);
+  const access = useQuery({ queryKey: ["portal-access", organizationId], queryFn: async () => {
+    const { data, error } = await supabase.from("medsync_memberships").select("user_id,role,status").eq("organization_id", organizationId);
+    if (error) throw error;
+    return data || [];
+  }});
   const members = useQuery({
     queryKey: ["portal-members", organizationId],
     queryFn: async () => {
@@ -31,6 +44,7 @@ export default function PortalAccess({
       if (error) throw error;
       return data as Member[];
     },
+    refetchOnWindowFocus: true,
   });
   async function link(event: FormEvent<HTMLFormElement>, member: Member) {
     event.preventDefault();
@@ -49,6 +63,9 @@ export default function PortalAccess({
       await cache.invalidateQueries({
         queryKey: ["portal-members", organizationId],
       });
+      await cache.invalidateQueries({ queryKey: ["portal-link", organizationId, member.user_id] });
+      await cache.invalidateQueries({ queryKey: ["invitation-links", organizationId] });
+      await cache.invalidateQueries({ queryKey: ["access-events", organizationId] });
       setNotice(
         "Vínculo atualizado. O usuário poderá acessar os dados desse cadastro.",
       );
@@ -71,7 +88,24 @@ export default function PortalAccess({
             Associe a conta ao cadastro correto para liberar os dados do portal.
           </p>
         </div>
-        <Link2 size={20} className="text-teal-700" />
+        <button type="button" className="button button-secondary" disabled={members.isFetching || recordsLoading}
+          onClick={() => {
+            void members.refetch();
+            void cache.invalidateQueries({ queryKey: ["records", organizationId] });
+          }}>
+          <RefreshCw size={16} /> Atualizar vínculos
+        </button>
+      </div>
+      <div className="portal-access-toolbar">
+        <label className="field-label">Buscar usuário
+          <input type="search" className="form-input" value={search} placeholder="Nome ou e-mail"
+            onChange={(event) => setSearch(event.target.value)} />
+        </label>
+        <label className="invitation-confirmation">
+          <input type="checkbox" checked={pendingOnly} onChange={(event) => setPendingOnly(event.target.checked)} />
+          Apenas aguardando vínculo
+        </label>
+        {members.data && <span>{members.data.filter((member) => member.role !== "receptionist" && !member.record_id).length} aguardando vínculo</span>}
       </div>
       {error && (
         <p role="alert" className="feedback feedback-error m-5">
@@ -83,6 +117,7 @@ export default function PortalAccess({
           {notice}
         </p>
       )}
+      {access.error && <p role="alert" className="feedback feedback-warning m-5">Não foi possível carregar os controles de acesso.</p>}
       {members.isPending ? (
         <div className="empty-panel">Carregando vínculos...</div>
       ) : members.error ? (
@@ -107,7 +142,10 @@ export default function PortalAccess({
         </div>
       ) : (
         <div className="portal-member-list">
-          {members.data.map((member) => (
+          {recordsLoading && <p role="status">Carregando cadastros para vincular...</p>}
+          {recordsError && <p role="alert">Não foi possível carregar os cadastros. Atualize a página para tentar novamente.</p>}
+          {!members.data.some((member) => (!pendingOnly || (member.role !== "receptionist" && !member.record_id)) && `${member.full_name} ${member.email}`.toLocaleLowerCase("pt-BR").includes(search.trim().toLocaleLowerCase("pt-BR"))) && <p className="empty-panel">Nenhum usuário encontrado com esses filtros.</p>}
+          {members.data.filter((member) => (!pendingOnly || (member.role !== "receptionist" && !member.record_id)) && `${member.full_name} ${member.email}`.toLocaleLowerCase("pt-BR").includes(search.trim().toLocaleLowerCase("pt-BR"))).map((member) => (
             <div className="portal-member" key={member.user_id}>
               <div className="person-cell">
                 <Initials name={member.full_name || member.email} />
@@ -121,10 +159,20 @@ export default function PortalAccess({
                         ? "Profissional"
                         : "Recepção"}
                   </small>
+                  <small>{access.data?.some((entry) => entry.user_id === member.user_id && entry.status === "suspended") ? "Acesso suspenso" : member.role === "receptionist" || member.record_id ? "Acesso liberado" : "Aguardando vínculo com cadastro"}</small>
+                  {access.data?.filter((entry) => entry.user_id === member.user_id).map((entry) => <PortalRoleControl key={`${member.user_id}-${entry.role}-${entry.status}`} organizationId={organizationId} userId={member.user_id} initialRole={String(entry.role)} initialStatus={String(entry.status || "active")} />)}
                 </div>
               </div>
               {member.role === "receptionist" ? (
                 <StatusBadge status="Ativo" />
+              ) : recordsLoading || recordsError ? null : !records.some((record) => record.module === (member.role === "patient" ? "pacientes" : "profissionais")) ? (
+                <div>
+                  <p>Nenhum cadastro de {member.role === "patient" ? "paciente" : "profissional"} disponível nesta clínica.</p>
+                  <Link className="button button-secondary" to={`${member.role === "patient" ? "/app/pacientes/novo" : "/app/profissionais/novo"}?${new URLSearchParams({ name: member.full_name, email: member.email, returnTo: "usuarios" })}`}>
+                    {member.role === "patient" ? "Cadastrar paciente" : "Cadastrar profissional"}
+                  </Link>
+                  <p>Depois, volte aqui e vincule a conta ao cadastro correto.</p>
+                </div>
               ) : (
                 <form onSubmit={(event) => void link(event, member)}>
                   <label className="sr-only" htmlFor={`link-${member.user_id}`}>

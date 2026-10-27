@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { HeartPulse } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { loadMemberships } from '../lib/loadMemberships'
 
 type OrganizationGateProps = {
   children: ReactNode
@@ -34,21 +35,12 @@ export default function OrganizationGate({
         return
       }
 
-      const { data, error } = await supabase
-        .from('organization_members')
-        .select('organization_id')
-        .eq('user_id', userData.user.id)
-        .limit(1)
-
-      if (!active) return
-
-      if (error) {
-        console.error('Erro ao verificar clínica:', error)
-        setStatus('error')
-        return
+      try {
+        const memberships = await loadMemberships(userData.user.id)
+        if (active) setStatus(memberships.length > 0 ? 'has-clinic' : 'no-clinic')
+      } catch {
+        if (active) setStatus('error')
       }
-
-      setStatus(data && data.length > 0 ? 'has-clinic' : 'no-clinic')
     }
 
     void checkOrganization()

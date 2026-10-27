@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { ClinicalRecord } from "./Overview";
 import { Initials, StatusBadge } from "./ui/Brand";
+import { appointmentEndTime, appointmentQuery, filterAppointments } from "../lib/schedule";
 const key = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 export default function ScheduleCalendar({
@@ -20,8 +21,10 @@ export default function ScheduleCalendar({
   base: string;
   ready: boolean;
 }) {
-  const [day, setDay] = useState(key(new Date()));
+  const [day, setDay] = useState(() => key(new Date()));
   const [professional, setProfessional] = useState("");
+  const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
   const selectedDate = new Date(day + "T12:00:00");
   const start = new Date(selectedDate);
   start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
@@ -30,14 +33,8 @@ export default function ScheduleCalendar({
     date.setDate(date.getDate() + i);
     return date;
   });
-  const appointments = records
-    .filter(
-      (r) =>
-        r.module === "consultas" &&
-        r.payload.starts_at?.slice(0, 10) === day &&
-        (!professional || r.payload.professional_id === professional),
-    )
-    .sort((a, b) => a.payload.starts_at.localeCompare(b.payload.starts_at));
+  const appointments = filterAppointments(records, day, professional, status, search);
+  const newAppointment = `${base}/consultas/nova?${appointmentQuery(day, professional)}`;
   const reference = (id?: string) =>
     records.find((r) => r.id === id)?.payload.name || "Não informado";
   function shift(amount: number) {
@@ -96,6 +93,15 @@ export default function ScheduleCalendar({
           </select>
         </label>
       </div>
+      <div className="calendar-filters">
+        <label className="field-label">Ir para a data<input type="date" className="form-input" value={day} onChange={(event) => { if (event.target.value) setDay(event.target.value); }} /></label>
+        <label className="field-label">Buscar paciente<input type="search" className="form-input" placeholder="Nome do paciente" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+        <label className="field-label">Situação da consulta<select className="form-input" value={status} onChange={(event) => setStatus(event.target.value)}>
+          <option value="">Todas as situações</option>
+          {["Agendada", "Confirmada", "Em espera", "Em atendimento", "Concluída", "Cancelada"].map((value) => <option key={value}>{value}</option>)}
+        </select></label>
+        {(search || status || professional) && <button className="button button-secondary" onClick={() => { setSearch(""); setStatus(""); setProfessional(""); }}>Limpar filtros</button>}
+      </div>
       <div className="calendar-week">
         {days.map((date) => (
           <button
@@ -112,13 +118,7 @@ export default function ScheduleCalendar({
             <strong>{date.getDate()}</strong>
             <small>
               {ready
-                ? records.filter(
-                    (r) =>
-                      r.module === "consultas" &&
-                      r.payload.starts_at?.slice(0, 10) === key(date) &&
-                      (!professional ||
-                        r.payload.professional_id === professional),
-                  ).length
+                ? filterAppointments(records, key(date), professional, status, search).length
                 : "—"}
             </small>
           </button>
@@ -139,7 +139,7 @@ export default function ScheduleCalendar({
               : "Aguardando dados da agenda"}
           </p>
         </div>
-        <CalendarDays size={21} className="text-teal-700" />
+        {ready && <Link className="button button-primary" to={newAppointment}><Plus size={16} />Agendar nesta data</Link>}
       </div>
       {!ready ? (
         <div className="empty-panel">Carregando agenda...</div>
@@ -151,7 +151,7 @@ export default function ScheduleCalendar({
               to={`${base}/consultas/${r.id}`}
               className={`calendar-appointment ${r.payload.status === "Cancelada" ? "calendar-canceled" : ""}`}
             >
-              <time>{r.payload.starts_at.slice(11, 16)}</time>
+              <time>{r.payload.starts_at.slice(11, 16)}<small>até {appointmentEndTime(r.payload.starts_at, r.payload.duration_minutes)}</small></time>
               <Initials name={reference(r.payload.patient_id)} />
               <div>
                 <strong>{reference(r.payload.patient_id)}</strong>
@@ -171,7 +171,7 @@ export default function ScheduleCalendar({
           <p>Não há consultas com os filtros selecionados.</p>
           <Link
             className="button button-secondary"
-            to={`${base}/consultas/nova`}
+            to={newAppointment}
           >
             <Plus size={15} />
             Agendar consulta

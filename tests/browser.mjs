@@ -9,7 +9,9 @@ const browser = await chromium.launch({
   headless: true,
 });
 const errors = [];
+const invitationRequests = [];
 const org = "11111111-1111-4111-8111-111111111111";
+const secondOrg = "33333333-3333-4333-8333-333333333333";
 const uid = "22222222-2222-4222-8222-222222222222";
 const rec = (id, module, payload) => ({
   id,
@@ -68,7 +70,7 @@ const invitations = Array.from({ length: 9 }, (_, i) => ({
   status: ["sent", "accepted", "failed"][i % 3],
   created_at: new Date().toISOString(),
 }));
-async function contextFor(role = "owner") {
+async function contextFor(role = "owner", mixed = false) {
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1000 },
   });
@@ -118,9 +120,13 @@ async function contextFor(role = "owner") {
       body =
         role === "owner" ? [{ organization_id: org, user_id: uid, role }] : [];
     else if (path.endsWith("/medsync_memberships"))
-      body = [{ organization_id: org, user_id: uid, role }];
+      body = mixed ? [{ organization_id: secondOrg, user_id: uid, role: "professional", status: "active" }] : role === "owner" && !url.searchParams.has("user_id")
+        ? [{ organization_id: org, user_id: "patient-user", role: "patient", status: "active" }]
+        : [{ organization_id: org, user_id: uid, role, status: "active" }];
     else if (path.endsWith("/organizations"))
-      body = { id: org, name: "Clínica demonstrativa" };
+      body = url.searchParams.get("id")?.startsWith("in.")
+        ? [{ id: org, name: "Clínica demonstrativa" }, ...(mixed ? [{ id: secondOrg, name: "Segunda clínica" }] : [])]
+        : { id: org, name: "Clínica demonstrativa" };
     else if (path.endsWith("/clinic_units"))
       body = [
         { id: "unit1", name: "Unidade principal" },
@@ -147,11 +153,13 @@ async function contextFor(role = "owner") {
           record_id: "p0",
         },
       ];
-    else if (path.includes("/functions/"))
+    else if (path.includes("/functions/")) {
+      invitationRequests.push(route.request().postDataJSON());
       return route.fulfill({
         status: 500,
         json: { error: "Envio bloqueado no teste: nenhum e-mail foi enviado." },
       });
+    }
     else if (path.includes("/rpc/")) body = null;
     return route.fulfill({
       status: 200,
@@ -182,6 +190,30 @@ await page.goto(origin + "/app/usuarios");
 await expect(
   page.getByRole("heading", { name: "Convidar usuário", exact: true }),
 ).toBeVisible();
+await page.getByRole("button", { name: "Reenviar convite para Usuário demonstrativo 1", exact: true }).click();
+await expect(page.getByRole("alert")).toContainText("Envio bloqueado no teste");
+await page.getByRole("searchbox", { name: "Buscar usuário" }).fill("inexistente");
+await expect(page.getByText("Nenhum usuário encontrado com esses filtros.")).toBeVisible();
+await page.getByRole("searchbox", { name: "Buscar usuário" }).fill("");
+await page.getByRole("checkbox", { name: "Apenas aguardando vínculo" }).check();
+await expect(page.getByText("Nenhum usuário encontrado com esses filtros.")).toBeVisible();
+await page.getByRole("checkbox", { name: "Apenas aguardando vínculo" }).uncheck();
+await page.goto(origin + "/app/pacientes/novo?name=Paciente%20Convidado&email=convidado%40example.com&returnTo=usuarios");
+await expect(page.getByRole("textbox", { name: /^Nome/ })).toHaveValue("Paciente Convidado");
+await expect(page.getByRole("textbox", { name: "E-mail", exact: true })).toHaveValue("convidado@example.com");
+await page.getByRole("textbox", { name: /^Nome/ }).fill("Alteração não salva");
+await page.getByRole("link", { name: "Cancelar", exact: true }).click();
+await expect(page.getByRole("alertdialog")).toBeVisible();
+await page.getByRole("button", { name: "Continuar editando", exact: true }).click();
+await expect(page.getByRole("textbox", { name: /^Nome/ })).toHaveValue("Alteração não salva");
+await page.getByRole("link", { name: "Cancelar", exact: true }).click();
+await page.getByRole("button", { name: "Descartar e sair", exact: true }).click();
+await expect(page).toHaveURL(origin + "/app/pacientes");
+await page.goto(origin + "/app/pacientes/p0");
+await page.getByRole("button", { name: "Convidar para o portal", exact: true }).click();
+await expect(page.getByRole("alert")).toContainText("Envio bloqueado no teste");
+expect(invitationRequests.at(-1)).toMatchObject({ record_id: "p0", role: "patient", email: "pessoa0@example.com" });
+await page.goto(origin + "/app/usuarios");
 await page.screenshot({
   path: ".tmp/screenshots/users-desktop.png",
   fullPage: true,
@@ -210,6 +242,18 @@ await page.goto(origin + "/app/agenda");
 await expect(page.locator(".calendar-week button")).toHaveCount(7);
 await page.getByRole("button", { name: "Próxima semana" }).click();
 await expect(page.locator(".calendar-week button")).toHaveCount(7);
+await page.getByLabel("Ir para a data", { exact: true }).fill(day);
+await page.getByRole("combobox", { name: "Filtrar por profissional", exact: true }).selectOption("doc1");
+await page.getByRole("searchbox", { name: "Buscar paciente", exact: true }).fill("inexistente");
+await expect(page.getByText("Não há consultas com os filtros selecionados.")).toBeVisible();
+await page.getByRole("button", { name: "Limpar filtros", exact: true }).click();
+await page.getByRole("combobox", { name: "Filtrar por profissional", exact: true }).selectOption("doc1");
+await page.getByRole("link", { name: "Agendar nesta data", exact: true }).click();
+await expect(page.locator('input[name="starts_at"]')).toHaveValue(day + "T09:00");
+await expect(page.getByRole("combobox", { name: /^Profissional/ })).toHaveValue("doc1");
+await expect(page.getByRole("combobox", { name: "Situação", exact: true })).toHaveValue("Agendada");
+await expect(page.getByRole("spinbutton", { name: /^Duração em minutos/ })).toHaveValue("30");
+await page.goto(origin + "/app/agenda");
 await page.screenshot({
   path: ".tmp/screenshots/calendar-desktop.png",
   fullPage: true,
@@ -267,6 +311,10 @@ for (const role of ["patient", "professional", "receptionist"]) {
         ? "profissional"
         : "recepcao";
   await expect(page).toHaveURL(new RegExp("/" + prefix + "/dashboard"));
+  await page.goto(origin + "/onboarding");
+  await expect(page).toHaveURL(new RegExp("/" + prefix + "/dashboard"));
+  await expect(page.getByRole("heading", { name: role === "patient" ? "Suas próximas consultas" : "Próximos atendimentos", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Atualizar meus dados", exact: true }).click();
   await expect(page.locator("main h1")).toBeVisible();
   await page.screenshot({
     path: `.tmp/screenshots/${role}-desktop.png`,
@@ -284,8 +332,30 @@ for (const role of ["patient", "professional", "receptionist"]) {
           : "pacientes"),
   );
   await expect(page.locator("main h1")).toBeVisible();
+  if (role === "patient") {
+    await page.getByLabel("Filtrar data", { exact: true }).fill("2099-12-31");
+    await expect(page.locator("tbody tr")).toHaveCount(0);
+    await page.getByRole("button", { name: "Limpar filtros", exact: true }).click();
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(origin + "/" + prefix + "/dashboard");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.screenshot({ path: `.tmp/screenshots/${role}-mobile.png`, fullPage: true });
   await context.close();
 }
+const mixedAccount = await contextFor("owner", true);
+await mixedAccount.page.goto(origin + "/app/pacientes/novo");
+await mixedAccount.page.getByRole("textbox", { name: /^Nome/ }).fill("Cadastro não salvo");
+mixedAccount.page.once("dialog", dialog => dialog.dismiss());
+await mixedAccount.page.getByRole("combobox", { name: "Selecionar clínica", exact: true }).selectOption(secondOrg);
+await expect(mixedAccount.page).toHaveURL(origin + "/app/pacientes/novo");
+await expect(mixedAccount.page.getByRole("textbox", { name: /^Nome/ })).toHaveValue("Cadastro não salvo");
+mixedAccount.page.once("dialog", dialog => dialog.accept());
+await mixedAccount.page.getByRole("combobox", { name: "Selecionar clínica", exact: true }).selectOption(secondOrg);
+await expect(mixedAccount.page).toHaveURL(origin + "/profissional/dashboard");
+await mixedAccount.page.getByRole("combobox", { name: "Selecionar clínica", exact: true }).selectOption(org);
+await expect(mixedAccount.page).toHaveURL(origin + "/app/dashboard");
+await mixedAccount.context.close();
 await browser.close();
 if (errors.length) throw new Error(errors.join("\n"));
 console.log(

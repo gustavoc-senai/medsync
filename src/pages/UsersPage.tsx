@@ -1,5 +1,5 @@
 import { Initials, StatusBadge } from "../components/ui/Brand";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MailPlus,
@@ -14,6 +14,9 @@ import {
 import { supabase } from "../lib/supabase";
 import { fetchOrganizationInvitations } from "../lib/records";
 import { buttonClass, inputClass } from "./AuthPage";
+import type { ClinicalRecord } from "../components/Overview";
+import { invitationStatus } from "../lib/invitationStatus";
+import { markFormSaved } from "../lib/formEvents";
 
 const roleNames: Record<string, string> = {
   patient: "Paciente",
@@ -44,8 +47,10 @@ function queryErrorDetails(error: unknown) {
 }
 export default function UsersPage({
   organizationId,
+  records = [],
 }: {
   organizationId: string;
+  records?: ClinicalRecord[];
 }) {
   const cache = useQueryClient();
   const [search, setSearch] = useState("");
@@ -54,8 +59,20 @@ export default function UsersPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [sendingEmail, setSendingEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("patient");
+  const [recordId, setRecordId] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
+  const linked = useQuery({ queryKey: ["invitation-links", organizationId], queryFn: async () => {
+    const { data, error } = await supabase.from("medsync_portal_links").select("user_id").eq("organization_id", organizationId);
+    if (error) throw error;
+    return new Set<string>((data || []).map((item) => String(item.user_id)));
+  }});
+  const statusOf = (invite: Parameters<typeof invitationStatus>[0]) => invitationStatus(invite, linked.data || new Set<string>(), now);
   const invitations = useQuery({
     queryKey: ["invitations", organizationId],
+    refetchOnWindowFocus: true,
     queryFn: () => fetchOrganizationInvitations(organizationId),
   });
   async function invite(event: FormEvent<HTMLFormElement>) {
@@ -63,16 +80,24 @@ export default function UsersPage({
     if (busy) return;
     const form = event.currentTarget;
     const values = new FormData(form);
+    await sendInvitation({
+      email: String(values.get("email")).trim().toLowerCase(),
+      full_name: String(values.get("full_name")).trim(),
+      role: String(values.get("role")),
+      record_id: String(values.get("record_id") || "") || null,
+    }, () => { form.reset(); setRecordId(""); setInviteRole("patient"); markFormSaved(); });
+  }
+  async function sendInvitation(person: { email: string; full_name: string; role: string; record_id?: string | null }, onSuccess?: () => void) {
+    if (busy) return;
     setBusy(true);
+    setSendingEmail(person.email);
     setError("");
     setMessage("");
     try {
       const { data, error } = await supabase.functions.invoke("invite-user", {
         body: {
           organization_id: organizationId,
-          email: String(values.get("email")).trim().toLowerCase(),
-          full_name: String(values.get("full_name")).trim(),
-          role: values.get("role"),
+          email: person.email, full_name: person.full_name, role: person.role, record_id: person.record_id || null,
         },
       });
       if (error) {
@@ -96,22 +121,36 @@ export default function UsersPage({
       if (!data?.invitation_id)
         throw new Error("O servidor não confirmou o envio do convite.");
       setMessage(String(data.message));
-      form.reset();
+      onSuccess?.();
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Não foi possível enviar o convite.",
       );
     } finally {
       setBusy(false);
+      setSendingEmail("");
       await cache.invalidateQueries({
         queryKey: ["invitations", organizationId],
       });
+      await cache.invalidateQueries({ queryKey: ["access-events", organizationId] });
     }
+  }
+  async function cancelInvitation(id: string) {
+    if (busy || !window.confirm("Cancelar este convite? A pessoa não poderá mais aceitá-lo.")) return;
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const { error } = await supabase.rpc("medsync_cancel_invitation", { p_id: id });
+      if (error) throw error;
+      setMessage("Convite cancelado.");
+      await cache.invalidateQueries({ queryKey: ["invitations", organizationId] });
+      await cache.invalidateQueries({ queryKey: ["access-events", organizationId] });
+    } catch (error) { setError(error && typeof error === "object" && "message" in error ? String(error.message) : "Não foi possível cancelar."); }
+    finally { setBusy(false); }
   }
   const all = invitations.data || [];
   const matching = all.filter(
     (i) =>
-      (!filter || i.status === filter) &&
+      (!filter || statusOf(i) === filter) &&
       `${i.full_name} ${i.email}`
         .toLocaleLowerCase("pt-BR")
         .includes(search.toLocaleLowerCase("pt-BR")),
@@ -193,6 +232,9 @@ export default function UsersPage({
               <option value="accepted">Aceitos</option>
               <option value="failed">Falharam</option>
               <option value="sending">Em envio</option>
+              <option value="access_ready">Acesso liberado</option>
+              <option value="expired">Expirados</option>
+              <option value="cancelled">Cancelados</option>
             </select>
           </div>
           {invitations.isPending ? (
@@ -231,6 +273,7 @@ export default function UsersPage({
                     <th>Usuário</th>
                     <th>Perfil</th>
                     <th>Situação</th>
+                    <th>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -258,7 +301,18 @@ export default function UsersPage({
                           </span>
                         </td>
                         <td>
-                          <StatusBadge status={invite.status} />
+                          <StatusBadge status={statusOf(invite)} />
+                          {invite.expires_at && !["accepted", "access_ready", "cancelled"].includes(statusOf(invite)) && <small className="invitation-date">Validade: {new Date(invite.expires_at).toLocaleDateString("pt-BR")}</small>}
+                        </td>
+                        <td>
+                          {["sent", "sending", "pending", "failed", "expired"].includes(statusOf(invite)) && (
+                            <button type="button" className="button button-secondary" disabled={busy}
+                              aria-label={`Reenviar convite para ${invite.full_name}`}
+                              onClick={() => void sendInvitation(invite)}>
+                              {busy && sendingEmail === invite.email ? "Enviando..." : "Reenviar convite"}
+                            </button>
+                          )}
+                          {!["accepted", "access_ready", "cancelled"].includes(statusOf(invite)) && <button type="button" className="button button-secondary" disabled={busy} onClick={() => void cancelInvitation(invite.id)}>Cancelar convite</button>}
                         </td>
                       </tr>
                     ))}
@@ -303,7 +357,7 @@ export default function UsersPage({
             própria senha pelo e-mail e confirma se deseja entrar na clínica.
             Para reenviar um convite pendente, informe novamente o mesmo e-mail e perfil.
           </p>
-          <form onSubmit={invite} className="users-form">
+          <form onSubmit={invite} className="users-form" data-protect-changes>
             <label className="field-label">
               Nome completo
               <input
@@ -330,7 +384,7 @@ export default function UsersPage({
             </label>
             <label className="field-label">
               Perfil de acesso
-              <select name="role" defaultValue="patient" className={inputClass}>
+              <select name="role" value={inviteRole} onChange={(event) => { setInviteRole(event.target.value); setRecordId(""); }} className={inputClass}>
                 {Object.entries(roleNames).map(([key, name]) => (
                   <option key={key} value={key}>
                     {name}
@@ -338,6 +392,21 @@ export default function UsersPage({
                 ))}
               </select>
             </label>
+            {inviteRole !== "receptionist" && <label className="field-label">Cadastro para liberar após o aceite
+              <select name="record_id" className={inputClass} value={recordId} onChange={(event) => {
+                setRecordId(event.target.value);
+                const record = records.find((item) => item.id === event.target.value);
+                const form = event.currentTarget.form;
+                if (record && form) {
+                  (form.elements.namedItem("full_name") as HTMLInputElement).value = record.payload.name || "";
+                  (form.elements.namedItem("email") as HTMLInputElement).value = record.payload.email || "";
+                }
+              }}>
+                <option value="">Vincular manualmente depois</option>
+                {records.filter((item) => item.module === (inviteRole === "patient" ? "pacientes" : "profissionais") && item.payload.status !== "Inativo" && item.payload.email).map((item) => <option key={item.id} value={item.id}>{item.payload.name} — {item.payload.email}</option>)}
+              </select>
+              <small>Ao selecionar um cadastro, o acesso aos dados será liberado automaticamente após o aceite.</small>
+            </label>}
             {error && (
               <p role="alert" className="feedback feedback-error">
                 {error}

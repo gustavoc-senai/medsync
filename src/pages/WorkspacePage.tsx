@@ -7,6 +7,11 @@ import AppShell from "../components/AppShell";
 import Overview from "../components/Overview";
 import { Initials, StatusBadge } from "../components/ui/Brand";
 import UsersPage from "./UsersPage";
+import { hasUnsavedChanges, markFormSaved } from "../lib/formEvents";
+import InviteRecord from "../components/InviteRecord";
+import AccessHistory from "../components/AccessHistory";
+import { loadMemberships } from "../lib/loadMemberships";
+import { selectMembership } from "../lib/memberships";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -94,99 +99,25 @@ export default function WorkspacePage() {
       const { data: auth, error: authError } = await supabase.auth.getUser();
       if (authError || !auth.user)
         throw new Error("Sessão expirada. Entre novamente.");
-      const { data: members, error } = await supabase
-        .from("organization_members")
-        .select("organization_id,role")
-        .eq("user_id", auth.user.id);
-      if (error) throw error;
-      const { data: portalMemberships, error: portalError } = await supabase
-        .from("medsync_memberships")
-        .select("organization_id,role")
-        .eq("user_id", auth.user.id);
-      if (portalError && !["42P01", "PGRST205"].includes(portalError.code)) throw portalError;
-      const conflictingRole = members?.some((member) =>
-        portalMemberships?.some((portal) =>
-          portal.organization_id === member.organization_id &&
-          ["patient", "professional", "receptionist"].includes(String(portal.role)) &&
-          String(portal.role) !== String(member.role),
-        ),
-      );
-      if (conflictingRole) throw new Error(
-        "Esta conta tem perfis conflitantes na clínica. O administrador precisa revisar organization_members e medsync_memberships antes de liberar o acesso.",
-      );
-      if (!members?.length) {
-        const { data: invitedMembership, error: membershipError } =
-          await supabase
-            .from("medsync_memberships")
-            .select("organization_id,role")
-            .eq("user_id", auth.user.id)
-            .order("organization_id");
-        if (membershipError) {
-          if (["42P01", "PGRST205"].includes(membershipError.code)) return null;
-          throw membershipError;
-        }
-        if (!invitedMembership?.length) return null;
-        const membership = invitedMembership.find(
-          (entry) => entry.organization_id === selectedOrganizationId,
-        ) || invitedMembership[0];
-        const { data: org, error: orgError } = await supabase
-          .from("organizations")
-          .select("id,name")
-          .eq("id", membership.organization_id)
-          .single();
-        if (orgError) throw orgError;
-        return {
-          id: String(org.id),
-          name: String(org.name),
-          role: String(membership.role),
-          user: auth.user,
-          organizations: await Promise.all(
-            invitedMembership.map(async (entry) => {
-              const { data: item, error: itemError } = await supabase
-                .from("organizations")
-                .select("id,name")
-                .eq("id", entry.organization_id)
-                .single();
-              if (itemError) throw itemError;
-              return {
-                id: String(item.id),
-                name: String(item.name),
-                role: String(entry.role),
-              };
-            }),
-          ),
-        };
-      }
-      const member =
-        members.find(
-          (entry) => entry.organization_id === selectedOrganizationId,
-        ) || members[0];
-      const { data: org, error: orgError } = await supabase
+      const memberships = await loadMemberships(auth.user.id);
+      const member = selectMembership(memberships, selectedOrganizationId);
+      if (!member) return null;
+      const { data: clinics, error } = await supabase
         .from("organizations")
         .select("id,name")
-        .eq("id", member.organization_id)
-        .single();
-      if (orgError) throw orgError;
+        .in("id", memberships.map((entry) => entry.organization_id));
+      if (error) throw error;
+      const org = clinics?.find((clinic) => clinic.id === member.organization_id);
+      if (!org) throw new Error("Não foi possível carregar a clínica selecionada.");
       return {
         id: String(org.id),
         name: String(org.name),
-        role: String(member.role || ""),
+        role: member.role,
         user: auth.user,
-        organizations: await Promise.all(
-          members.map(async (entry) => {
-            const { data: item, error: itemError } = await supabase
-              .from("organizations")
-              .select("id,name")
-              .eq("id", entry.organization_id)
-              .single();
-            if (itemError) throw itemError;
-            return {
-              id: String(item.id),
-              name: String(item.name),
-              role: String(entry.role || ""),
-            };
-          }),
-        ),
+        organizations: memberships.filter((entry) => !entry.conflict && entry.status === "active").flatMap((entry) => {
+          const clinic = clinics?.find((item) => item.id === entry.organization_id);
+          return clinic ? [{ id: String(clinic.id), name: String(clinic.name), role: entry.role }] : [];
+        }),
       };
     },
   });
@@ -382,8 +313,11 @@ export default function WorkspacePage() {
         cache.invalidateQueries({ queryKey: ["records", orgId] }),
         cache.invalidateQueries({ queryKey: ["units", orgId] }),
       ]);
+      markFormSaved();
       navigate(
-        `${base}/${segment === "agendar" ? "consultas" : segment}/${data.id}`,
+        isNew && ["pacientes", "profissionais"].includes(moduleKey) && new URLSearchParams(location.search).get("returnTo") === "usuarios"
+          ? `${base}/usuarios`
+          : `${base}/${segment === "agendar" ? "consultas" : segment}/${data.id}`,
       );
       setNotice("Registro salvo com sucesso.");
     } catch (e) {
@@ -396,7 +330,14 @@ export default function WorkspacePage() {
     const common = {
       name: field.key,
       required: field.required,
-      defaultValue: selected?.payload[field.key] || "",
+      defaultValue: selected?.payload[field.key] || (
+        isNew && ["pacientes", "profissionais"].includes(moduleKey) && ["name", "email"].includes(field.key)
+          ? new URLSearchParams(location.search).get(field.key) || ""
+          : isNew && moduleKey === "consultas" && ["starts_at", "professional_id"].includes(field.key)
+            ? new URLSearchParams(location.search).get(field.key) || ""
+            : field.key === "duration_minutes" ? "30"
+              : isNew && field.key === "status" ? field.options?.[0] || "" : ""
+      ),
       className: inputClass,
     };
     const options =
@@ -412,8 +353,7 @@ export default function WorkspacePage() {
                   : field.type === "professional"
                     ? "profissionais"
                     : "servicos") &&
-                (field.type !== "service" ||
-                  r.payload.status !== "Inativo"),
+                (r.payload.status !== "Inativo" || r.id === selected?.payload[field.key]),
             )
             .map((r) => ({ value: r.id, label: label(r) }))
         : field.options?.map((s) => ({ value: s, label: s }));
@@ -444,11 +384,13 @@ export default function WorkspacePage() {
                   ? "application/pdf,image/jpeg,image/png"
                   : undefined
               }
-              min={field.type === "number" ? 0 : undefined}
-              step={field.type === "number" ? "0.01" : undefined}
+              min={field.type === "number" ? ["duration", "duration_minutes"].includes(field.key) ? 1 : 0 : undefined}
+              max={field.type === "number" && ["duration", "duration_minutes"].includes(field.key) ? 480 : undefined}
+              step={field.type === "number" ? ["duration", "duration_minutes"].includes(field.key) ? "1" : "0.01" : undefined}
               maxLength={500}
             />
           )}
+          {field.key === "duration_minutes" && <small className="field-help">Se selecionar um serviço, a duração cadastrada no serviço terá prioridade.</small>}
         </div>
       </label>
     );
@@ -464,6 +406,12 @@ export default function WorkspacePage() {
     <main className="app-loading">
       <h1>Não foi possível liberar o acesso</h1>
       <p role="alert">{failure(organization.error)}</p>
+      <button className="button button-secondary" onClick={() => {
+        if (selectedOrganizationId) {
+          localStorage.removeItem("medsync-organization-id");
+          setSelectedOrganizationId("");
+        } else void organization.refetch();
+      }}>{selectedOrganizationId ? "Buscar outra clínica disponível" : "Tentar novamente"}</button>
       <button className="button button-primary" onClick={async () => {
         await supabase.auth.signOut();
         cache.clear();
@@ -485,7 +433,7 @@ export default function WorkspacePage() {
           : "/recepcao";
     if (!location.pathname.startsWith(target + "/"))
       return <Navigate to={target + "/dashboard"} replace />;
-    return <PortalPage organization={organization.data} />;
+    return <PortalPage organization={organization.data} onOrganizationChange={switchOrganization} />;
   }
   if (
     organization.data &&
@@ -573,6 +521,8 @@ export default function WorkspacePage() {
   );
   const listPath = `${base}/${segment}`;
   function switchOrganization(id: string) {
+    if (hasUnsavedChanges() && !window.confirm("Trocar de clínica e descartar as alterações não salvas?")) return;
+    markFormSaved();
     localStorage.setItem("medsync-organization-id", id);
     setSelectedOrganizationId(id);
     const nextRole = organization.data?.organizations.find(
@@ -653,8 +603,9 @@ export default function WorkspacePage() {
       )}
       {segment === "usuarios" && orgId && (
         <>
-          <UsersPage organizationId={orgId} />
-          <PortalAccess organizationId={orgId} records={records.data || []} />
+          <UsersPage organizationId={orgId} records={records.data || []} />
+          <PortalAccess organizationId={orgId} records={records.data || []} recordsLoading={records.isPending} recordsError={!!records.error} />
+          <AccessHistory organizationId={orgId} />
         </>
       )}
       {extraPageTitles[segment] && organization.data && (
@@ -680,6 +631,7 @@ export default function WorkspacePage() {
       {profile && (
         <form
           key="profile"
+          data-protect-changes
           className="surface profile-form"
           onSubmit={async (e) => {
             e.preventDefault();
@@ -695,6 +647,7 @@ export default function WorkspacePage() {
               });
               if (error) throw error;
               await cache.invalidateQueries({ queryKey: ["organization"] });
+              markFormSaved();
               setNotice("Perfil atualizado com sucesso.");
             } catch (e) {
               setError(failure(e));
@@ -920,6 +873,9 @@ export default function WorkspacePage() {
                         </div>
                       ))}
                   </dl>
+                  {["pacientes", "profissionais"].includes(moduleKey) && orgId && (
+                    <InviteRecord organizationId={orgId} record={selected} />
+                  )}
                   {selected.payload.storage_path && (
                     <button
                       type="button"
@@ -1002,6 +958,10 @@ export default function WorkspacePage() {
                 <div className="empty-panel">
                   Não foi possível carregar os registros. Tente atualizar a
                   página.
+                  <button type="button" className="button button-secondary" onClick={() => {
+                    if (moduleKey === "unidades") void units.refetch();
+                    else void records.refetch();
+                  }}>Tentar novamente</button>
                 </div>
               ) : visible.length === 0 ? (
                 <div className="empty-panel">

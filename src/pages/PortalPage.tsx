@@ -25,7 +25,10 @@ import {
 } from "../lib/records";
 import type { ClinicalRecord } from "../components/Overview";
 import AdminPages from "./AdminPages";
-type Context = { id: string; name: string; role: string; user: User };
+import { markFormSaved } from "../lib/formEvents";
+import PortalHighlights from "../components/PortalHighlights";
+import { formatPortalDate } from "../lib/portalRecords";
+type Context = { id: string; name: string; role: string; user: User; organizations?: { id: string; name: string; role: string }[] };
 function message(error: unknown) {
   return error && typeof error === "object" && "message" in error
     ? String(error.message)
@@ -33,8 +36,10 @@ function message(error: unknown) {
 }
 export default function PortalPage({
   organization,
+  onOrganizationChange,
 }: {
   organization: Context;
+  onOrganizationChange?: (id: string) => void;
 }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -60,17 +65,24 @@ export default function PortalPage({
   const definition = modules[key];
   const home = segment === "dashboard";
   const [search, setSearch] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer=window.setInterval(()=>setNow(Date.now()),60_000); return ()=>window.clearInterval(timer); },[]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   useEffect(() => {
     setSearch("");
+    setFilterDate("");
+    setFilterStatus("");
     setError("");
     setNotice("");
   }, [pathname]);
   const link = useQuery({
     queryKey: ["portal-link", organization.id, organization.user.id],
     enabled: !reception,
+    refetchOnWindowFocus: true,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("medsync_portal_links")
@@ -85,6 +97,7 @@ export default function PortalPage({
   const records = useQuery({
     queryKey: ["portal-records", organization.id, organization.user.id],
     enabled: reception || !!link.data?.record_id,
+    refetchOnWindowFocus: true,
     queryFn: () => fetchOrganizationRecords(organization.id),
   });
   const catalog = useQuery({
@@ -107,10 +120,11 @@ export default function PortalPage({
       (r) =>
         r.module === key &&
         (!search ||
-          JSON.stringify(r.payload)
+          `${JSON.stringify(r.payload)} ${list.find(item=>item.id===r.payload.patient_id)?.payload.name || ""} ${(catalog.data || []).find(item=>item.id===r.payload.professional_id)?.payload.name || ""}`
             .toLocaleLowerCase("pt-BR")
             .includes(search.toLocaleLowerCase("pt-BR"))),
     )
+    .filter((r) => key !== "consultas" || ((!filterDate || r.payload.starts_at?.slice(0,10) === filterDate) && (!filterStatus || r.payload.status === filterStatus)))
     .filter((r) => segment !== "historico" || r.payload.status === "Concluída")
     .filter(
       (r) =>
@@ -272,6 +286,7 @@ export default function PortalPage({
         }
       }
       await refresh();
+      markFormSaved();
       navigate(`${base}/${segment}/${result.data.id}`);
       setNotice("Registro salvo com sucesso.");
     } catch (e) {
@@ -301,21 +316,23 @@ export default function PortalPage({
   function field(f: Field) {
     const common = {
       name: f.key,
-      defaultValue: selected?.payload[f.key] || "",
+      defaultValue: selected?.payload[f.key] || (f.key === "duration_minutes" ? "30" : creating && f.key === "status" ? f.options?.[0] || "" : ""),
       required: f.required,
       className: "form-input",
     };
     const options =
       f.type === "patient"
         ? list
-            .filter((r) => r.module === "pacientes")
+            .filter((r) => r.module === "pacientes" && (r.payload.status !== "Inativo" || r.id === selected?.payload[f.key]))
             .map((r) => ({ value: r.id, label: r.payload.name }))
         : f.type === "professional"
           ? (catalog.data || []).map((r) => ({
               value: r.id,
               label: r.payload.name,
             }))
-          : f.options?.map((v) => ({ value: v, label: v }));
+          : f.type === "service"
+            ? list.filter((r) => r.module === "servicos" && (r.payload.status !== "Inativo" || r.id === selected?.payload[f.key])).map((r) => ({ value: r.id, label: r.payload.name }))
+            : f.options?.map((v) => ({ value: v, label: v }));
     return (
       <label key={f.key} className="field-label">
         {f.label}
@@ -342,10 +359,12 @@ export default function PortalPage({
                 ? "application/pdf,image/jpeg,image/png"
                 : undefined
             }
-            min={f.type === "number" ? 0 : undefined}
-            step={f.type === "number" ? "0.01" : undefined}
+            min={f.type === "number" ? f.key === "duration_minutes" ? 1 : 0 : undefined}
+            max={f.key === "duration_minutes" ? 480 : undefined}
+            step={f.type === "number" ? f.key === "duration_minutes" ? "1" : "0.01" : undefined}
           />
         )}
+        {f.key === "duration_minutes" && <small className="field-help">Se selecionar um serviço, a duração cadastrada no serviço terá prioridade.</small>}
       </label>
     );
   }
@@ -362,6 +381,9 @@ export default function PortalPage({
       base={base}
       segment={segment}
       clinic={organization.name}
+      organizations={organization.organizations}
+      activeOrganizationId={organization.id}
+      onOrganizationChange={onOrganizationChange}
       userName={userName}
       email={organization.user.email || ""}
       heading={title}
@@ -399,6 +421,13 @@ export default function PortalPage({
         ) : undefined
       }
     >
+      <div className="portal-data-toolbar">
+        <span>Dados da clínica: {organization.name}</span>
+        <button type="button" className="button button-secondary" disabled={records.isFetching || link.isFetching || catalog.isFetching} onClick={async()=>{
+          if (!reception) await link.refetch();
+          await Promise.all([refresh(),catalog.refetch()]);
+        }}>{records.isFetching || link.isFetching || catalog.isFetching ? "Atualizando..." : "Atualizar meus dados"}</button>
+      </div>
       {error && (
         <p role="alert" className="feedback feedback-error">
           {error}
@@ -434,6 +463,10 @@ export default function PortalPage({
           Sua conta está vinculada à clínica. Para liberar os dados, o
           administrador precisa associar seu usuário ao cadastro de{" "}
           {patient ? "paciente" : "profissional"} em Usuários e convites.
+          <button type="button" className="button button-secondary" disabled={link.isFetching}
+            onClick={() => void link.refetch()}>
+            {link.isFetching ? "Verificando..." : "Verificar liberação do acesso"}
+          </button>
         </div>
       )}
       {!permitted ? (
@@ -469,7 +502,7 @@ export default function PortalPage({
               </p>
             </div>
           </div>
-          <form
+          <form data-protect-changes
             className="space-y-5"
             onSubmit={async (e) => {
               e.preventDefault();
@@ -483,6 +516,7 @@ export default function PortalPage({
                 });
                 if (error) throw error;
                 await cache.invalidateQueries({ queryKey: ["organization"] });
+                markFormSaved();
                 setNotice("Nome atualizado.");
               } catch (e) {
                 setError(message(e));
@@ -562,10 +596,8 @@ export default function PortalPage({
                   : list.filter((r) => r.module === "pacientes").length,
               },
               {
-                label: "Aguardando atendimento",
-                value: appointments.filter(
-                  (r) => r.payload.status === "Em espera",
-                ).length,
+                label: patient ? "Pagamentos pendentes" : "Aguardando atendimento",
+                value: patient ? list.filter(r=>r.module==="pagamentos" && r.payload.status==="Pendente").length : appointments.filter((r) => r.payload.status === "Em espera").length,
               },
             ].map((m) => (
               <div className="metric-card" key={m.label}>
@@ -575,6 +607,7 @@ export default function PortalPage({
               </div>
             ))}
           </div>
+          <PortalHighlights records={list} catalog={catalog.data || []} role={role} base={base} ready={ready} now={now} />
           <section className="surface">
             <div className="surface-header">
               <div>
@@ -631,6 +664,7 @@ export default function PortalPage({
                 );
                 if (error) throw error;
                 await refresh();
+                markFormSaved();
                 navigate(`${base}/consultas/${appointmentId}`);
                 setNotice(
                   "Solicitação registrada. A clínica precisa confirmar a disponibilidade.",
@@ -872,6 +906,11 @@ export default function PortalPage({
                 </label>
                 <span className="field-help">{rows.length} registros</span>
               </div>
+              {key === "consultas" && <div className="calendar-filters">
+                <label className="field-label">Filtrar data<input type="date" className="form-input" value={filterDate} onChange={event=>setFilterDate(event.target.value)} /></label>
+                <label className="field-label">Filtrar situação<select className="form-input" value={filterStatus} onChange={event=>setFilterStatus(event.target.value)}><option value="">Todas as situações</option>{["Agendada","Confirmada","Em espera","Em atendimento","Concluída","Cancelada"].map(status=><option key={status}>{status}</option>)}</select></label>
+                {(search || filterDate || filterStatus) && <button type="button" className="button button-secondary" onClick={()=>{setSearch("");setFilterDate("");setFilterStatus("");}}>Limpar filtros</button>}
+              </div>}
               {rows.length ? (
                 <div className="table-scroll">
                   <table className="data-table">
@@ -902,13 +941,7 @@ export default function PortalPage({
                             </div>
                           </td>
                           <td>
-                            {(
-                              r.payload.starts_at ||
-                              r.payload.date ||
-                              r.created_at
-                            )
-                              .replace("T", " ")
-                              .slice(0, 16)}
+                            {formatPortalDate(r.payload.starts_at || r.payload.date || r.created_at, !!r.payload.starts_at)}
                           </td>
                           <td>
                             {r.payload.status ? (

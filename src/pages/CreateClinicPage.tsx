@@ -10,6 +10,8 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import { markFormSaved } from "../lib/formEvents";
+import { loadMemberships } from "../lib/loadMemberships";
 
 export default function CreateClinicPage() {
   const navigate = useNavigate();
@@ -50,15 +52,10 @@ export default function CreateClinicPage() {
       }
 
       // Evita cadastro duplicado em situações comuns.
-      const { data: memberships, error: membershipError } = await supabase
-        .from("organization_members")
-        .select("organization_id")
-        .eq("user_id", userData.user.id)
-        .limit(1);
-
-      if (membershipError) throw membershipError;
+      const memberships = await loadMemberships(userData.user.id);
 
       if (memberships && memberships.length > 0) {
+        markFormSaved();
         navigate("/app/dashboard", { replace: true });
         return;
       }
@@ -78,6 +75,7 @@ export default function CreateClinicPage() {
         throw new Error("Não foi possível confirmar o cadastro da clínica.");
       }
 
+      markFormSaved();
       navigate("/app/dashboard", { replace: true });
     } catch (err) {
       setError(
@@ -152,7 +150,7 @@ export default function CreateClinicPage() {
           </div>
           <h2>Vamos conhecer sua clínica.</h2>
           <p>Você poderá adicionar outras unidades depois.</p>
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} data-protect-changes>
             <label className="field-label" htmlFor="clinicName">
               Nome da organização
               <input

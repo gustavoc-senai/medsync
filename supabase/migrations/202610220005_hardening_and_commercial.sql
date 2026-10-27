@@ -3,6 +3,32 @@ begin;
 alter table public.medsync_memberships
   add column if not exists status text not null default 'active';
 
+-- Keep the installed input-parameter name (for example target_organization).
+-- CREATE OR REPLACE must preserve it; DROP would break dependent RLS policies.
+do $migration$
+declare argument_name text;
+begin
+  select coalesce(proargnames[1],'target_organization') into argument_name
+    from pg_proc where oid=to_regprocedure('public.medsync_is_admin(uuid)');
+  execute format($definition$
+    create or replace function public.medsync_is_admin(%I uuid)
+    returns boolean language sql stable security definer set search_path='' as $function$
+      select auth.uid() is not null and exists (
+        select 1 from public.organization_members m
+        where m.organization_id=$1 and m.user_id=auth.uid()
+          and lower(m.role) in ('owner','admin','administrator','super_admin')
+      ) and not exists (
+        select 1 from public.medsync_memberships m
+        where m.organization_id=$1 and m.user_id=auth.uid()
+          and m.role in ('patient','professional','receptionist')
+      );
+    $function$;
+  $definition$,coalesce(argument_name,'target_organization'));
+end;
+$migration$;
+revoke all on function public.medsync_is_admin(uuid) from public,anon;
+grant execute on function public.medsync_is_admin(uuid) to authenticated;
+
 create table if not exists public.medsync_record_history (
   id bigint generated always as identity primary key,
   organization_id uuid not null references public.organizations(id) on delete cascade,
@@ -338,21 +364,33 @@ begin
 end;
 $$;
 
-alter table storage.objects enable row level security;
-grant select,insert,update,delete on storage.objects to authenticated;
-drop policy if exists medsync_private_file_read on storage.objects;
-create policy medsync_private_file_read on storage.objects for select to authenticated
-  using (bucket_id='medsync-private' and public.medsync_private_file_read(name));
-drop policy if exists medsync_private_file_insert on storage.objects;
-create policy medsync_private_file_insert on storage.objects for insert to authenticated
-  with check (bucket_id='medsync-private' and public.medsync_private_file_write(name));
-drop policy if exists medsync_private_file_update on storage.objects;
-create policy medsync_private_file_update on storage.objects for update to authenticated
-  using (bucket_id='medsync-private' and public.medsync_private_file_write(name))
-  with check (bucket_id='medsync-private' and public.medsync_private_file_write(name));
-drop policy if exists medsync_private_file_delete on storage.objects;
-create policy medsync_private_file_delete on storage.objects for delete to authenticated
-  using (bucket_id='medsync-private' and public.medsync_private_file_write(name));
+-- Storage is managed by Supabase. SQL Editor roles may not own storage.objects.
+-- Never change its owner or disable RLS to bypass this restriction.
+do $storage_setup$
+begin
+  if exists(select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname='storage' and c.relname='objects'
+      and pg_has_role(current_user,c.relowner,'USAGE')) then
+    alter table storage.objects enable row level security;
+    grant select,insert,update,delete on storage.objects to authenticated;
+    drop policy if exists medsync_private_file_read on storage.objects;
+    create policy medsync_private_file_read on storage.objects for select to authenticated
+      using (bucket_id='medsync-private' and public.medsync_private_file_read(name));
+    drop policy if exists medsync_private_file_insert on storage.objects;
+    create policy medsync_private_file_insert on storage.objects for insert to authenticated
+      with check (bucket_id='medsync-private' and public.medsync_private_file_write(name));
+    drop policy if exists medsync_private_file_update on storage.objects;
+    create policy medsync_private_file_update on storage.objects for update to authenticated
+      using (bucket_id='medsync-private' and public.medsync_private_file_write(name))
+      with check (bucket_id='medsync-private' and public.medsync_private_file_write(name));
+    drop policy if exists medsync_private_file_delete on storage.objects;
+    create policy medsync_private_file_delete on storage.objects for delete to authenticated
+      using (bucket_id='medsync-private' and public.medsync_private_file_write(name));
+  else
+    raise notice 'Storage: configure as 4 políticas do bucket medsync-private em Storage > Policies. Consulte docs/supabase-storage.md. O restante da migração foi aplicado normalmente.';
+  end if;
+end;
+$storage_setup$;
 
 create table if not exists public.medsync_plans (
   code text primary key,
@@ -424,6 +462,8 @@ revoke all on function public.medsync_audit_record_change(),
   public.medsync_request_plan(uuid,text)
   from public,anon;
 grant execute on function public.medsync_portal_update(uuid,text,jsonb),
+  public.medsync_private_file_read(text),
+  public.medsync_private_file_write(text),
   public.medsync_list_plans(),
   public.medsync_request_plan(uuid,text),
   public.medsync_request_appointment(uuid,uuid,text) to authenticated;

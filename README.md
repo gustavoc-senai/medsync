@@ -59,7 +59,11 @@ Registros clínicos novos exigem a seleção do profissional responsável. Para 
 
 ## Convites e e-mails
 
-Em `/aceitar-convite`, a pessoa define a senha, marca a confirmação de que deseja entrar na clínica e clica em **Aceitar convite e entrar na clínica**. A função existente `medsync_accept_invitations` só é chamada após esse envio. Sem sessão válida, a página orienta abrir o link do e-mail. A validação definitiva do convite e a criação do vínculo continuam sob responsabilidade dessa função no banco.
+Para publicar as melhorias de convites, perfis, auditoria e proteção de formulários, siga [a ordem de atualização](docs/atualizacao-acessos.md). O `0005` preserva o nome instalado do parâmetro de `medsync_is_admin`; quando a conexão não é dona de `storage.objects`, as políticas de anexos são configuradas pelo painel, sem bloquear o restante da migração.
+
+A lista de convites oferece reenvio direto para convites pendentes ou com falha. A seção de vínculos permite buscar por nome/e-mail, filtrar contas aguardando cadastro e atualizar os dados. Ao iniciar um cadastro pela conta convidada, nome e e-mail vêm preenchidos e o salvamento retorna à lista de vínculos; a associação permanece explícita. No portal, o usuário pode verificar se a clínica já liberou seu acesso sem sair da conta.
+
+Em `/aceitar-convite`, a pessoa define a senha, marca a confirmação de que deseja entrar na clínica e clica em **Aceitar convite e entrar na clínica**. A nova função `medsync_accept_invitation` valida identidade, perfil, validade e cancelamento e cria o vínculo antes de abrir o portal correspondente. Sem sessão válida, a página orienta abrir o link do e-mail.
 
 O envio utiliza a Edge Function `invite-user` e o Supabase Auth. A função valida a sessão e o papel administrativo na organização antes de usar as credenciais de servidor. Nunca coloque uma chave secret/service_role em variável VITE.
 
@@ -71,20 +75,28 @@ A função local inclui códigos de erro detalhados e logs do servidor. Para dis
 
 ## Limites atuais
 
-- Consultas solicitadas pelo paciente dependem de confirmação da clínica. A solicitação não calcula sobreposição por duração nem garante aderência à disponibilidade cadastrada.
-- Receitas, exames, atestados e documentos são registros textuais/referências internas. Upload de arquivos, emissão assinada e assinatura digital não foram implementados.
+- Consultas solicitadas pelo paciente dependem de confirmação da clínica, disponibilidade cadastrada e intervalo de descanso. O banco valida duração e sobreposição; solicitações do portal usam duração inicial de 30 minutos.
+- Documentos aceitam anexos privados com as políticas de Storage configuradas. Emissão assinada e assinatura digital não foram implementadas.
 - Pagamentos são lançamentos; não existe processamento de cartão, Pix ou cobrança de assinatura.
-- Listas de registros carregam no máximo 1.000 itens, com indicação ao atingir esse limite. Busca, indicadores, relatórios e CSV consideram os dados carregados. O histórico de convites carrega 100 itens.
+- Registros e convites são carregados em lotes para busca, indicadores e relatórios; conjuntos muito grandes ainda precisam de paginação e filtros no servidor. O histórico de acessos mostra até 50 eventos recentes.
 - Recebimentos no fluxo de caixa são pagamentos marcados como pagos; despesas são contas a pagar marcadas como pagas. Contas a receber são separadas para evitar somar o mesmo recebimento duas vezes.
-- Auditoria clínica, versionamento de prontuário, notificações externas, MFA e gestão de assinaturas continuam fora desta implementação.
-- Convites pendentes podem ser reenviados pelo formulário usando o mesmo e-mail e perfil, reutilizando o registro existente. Falhas no reenvio preservam o convite anterior. Os limites de envio do Supabase/SMTP continuam valendo. Contas com e-mail já confirmado no Auth e revogação por interface ainda requerem um fluxo específico.
-- A seleção da organização usa o primeiro vínculo encontrado. Não foi acrescentado um seletor de múltiplas organizações.
+- Alterações de registros e acessos têm histórico no banco. Notificações externas, MFA, assinatura digital e cobrança de assinaturas continuam fora desta implementação.
+- Reenvio, validade e cancelamento de convites estão disponíveis. Contas já confirmadas sem identidade registrada no convite pendente ainda requerem revisão administrativa.
+- A clínica selecionada é preservada no navegador; ao aceitar, a organização do convite passa a ser selecionada.
 
 ## Validação
 
+A agenda permite selecionar uma data, buscar por paciente e filtrar a situação. O agendamento iniciado nela preserva o dia e o profissional escolhidos e começa às 09:00, horário que pode ser ajustado antes de salvar. A duração pode ser informada no cadastro da consulta; quando há serviço selecionado, vale a duração do serviço. Novos cadastros sugerem a situação inicial e os seletores de novos agendamentos omitem cadastros inativos.
+
+Os portais de paciente, profissional e recepção oferecem atualização manual dos dados, filtros de data/situação para consultas e busca por nomes de pacientes/profissionais nos registros autorizados. O resumo mostra consultas futuras e atendimentos em espera/em andamento hoje. Pacientes e profissionais têm atalhos para documentos recentes; a recepção tem atalhos para fila, cadastros e agendamento. Nenhuma consulta adicional amplia as permissões: os cartões usam os registros já autorizados pelo banco. As telas são verificadas em desktop e celular para os quatro perfis.
+
+A verificação de clínicas usa os vínculos administrativos e de portal em conjunto, incluindo suspensão e conflito de papéis. Contas convidadas não são encaminhadas para criar outra clínica. A troca de clínica está disponível também nos portais e avisa se houver formulário não salvo. Erros inesperados exibem uma tela de recuperação; falhas de carregamento de registros podem ser repetidas na própria tela.
+
 ```sh
 npm run build
+npm test
 node tests/invite-user.test.mjs
+node tests/auth-redirect.test.mjs
 ```
 
 Para reproduzir os testes adicionais sem adicionar dependências ao aplicativo:
@@ -92,6 +104,7 @@ Para reproduzir os testes adicionais sem adicionar dependências ao aplicativo:
 ```sh
 npm install --prefix .tmp/validation --no-save --package-lock=false @playwright/test @electric-sql/pglite
 node tests/portal-permissions.mjs
+node tests/invitation-lifecycle.mjs
 node tests/browser.mjs
 ```
 

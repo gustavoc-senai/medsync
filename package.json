@@ -7,6 +7,7 @@
     "dev": "vite --configLoader native",
     "build": "tsc -b && vite build --configLoader native",
     "lint": "oxlint",
+    "test": "node --test tests/auth-redirect.test.mjs tests/invite-user.test.mjs tests/memberships.test.mjs tests/schedule.test.mjs tests/portal-records.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

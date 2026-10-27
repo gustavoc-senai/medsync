@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../lib/supabase";
+import { acceptedInvitationDestination } from "../lib/authRedirect";
 
 export const inputClass = "form-input";
 export const buttonClass = "button button-primary";
@@ -51,7 +52,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   );
 }
 export default function AuthPage() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const cache = useQueryClient();
   const signup = pathname === "/cadastro";
@@ -107,13 +108,27 @@ export default function AuthPage() {
         const { error } = await supabase.auth.updateUser({ password });
         if (error) throw error;
         if (invitation) {
-          const { error: acceptError } = await supabase.rpc(
-            "medsync_accept_invitations",
+          const invitationId = new URLSearchParams(search).get("convite");
+          const { data: accepted, error: acceptError } = await supabase.rpc(
+            "medsync_accept_invitation", { p_invitation_id: invitationId },
           );
           if (acceptError)
             throw new Error(
               "Senha salva, mas não foi possível aceitar o vínculo com a clínica. Tente salvar novamente ou contate o administrador.",
             );
+          const { data: auth, error: userError } = await supabase.auth.getUser();
+          if (userError || !auth.user) throw new Error("Entre novamente para acessar seu painel.");
+          const { data: memberships, error: membershipError } = await supabase
+            .from("medsync_memberships")
+            .select("organization_id,role")
+            .eq("user_id", auth.user.id)
+            .order("organization_id");
+          if (membershipError) throw membershipError;
+          const destination = acceptedInvitationDestination(memberships || [], accepted?.organization_id || localStorage.getItem("medsync-organization-id"));
+          localStorage.setItem("medsync-organization-id", destination.organizationId);
+          cache.clear();
+          navigate(destination.path, { replace: true });
+          return;
         }
         cache.clear();
         navigate("/app/dashboard", { replace: true });

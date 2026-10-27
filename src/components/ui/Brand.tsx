@@ -34,8 +34,9 @@ export function StatusBadge({ status }: { status: string }) {
     "Pago",
     "accepted",
     "sent",
+    "access_ready",
   ].includes(status);
-  const bad = ["Inativo", "Cancelada", "Cancelado", "failed"].includes(status);
+  const bad = ["Inativo", "Cancelada", "Cancelado", "failed", "cancelled", "expired"].includes(status);
   const pending = ["Em espera", "Pendente", "sending", "Agendada"].includes(
     status,
   );
@@ -44,6 +45,9 @@ export function StatusBadge({ status }: { status: string }) {
     sent: "Enviado",
     failed: "Falhou",
     sending: "Em envio",
+    access_ready: "Acesso liberado",
+    cancelled: "Cancelado",
+    expired: "Expirado",
   };
   return (
     <span

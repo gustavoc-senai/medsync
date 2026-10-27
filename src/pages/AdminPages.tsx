@@ -373,7 +373,7 @@ export default function AdminPages({
           <p className="field-help mb-6">
             Use uma senha pessoal com pelo menos 8 caracteres.
           </p>
-          <form className="space-y-5" onSubmit={password}>
+          <form className="space-y-5" onSubmit={password} data-protect-changes>
             <label className="field-label">
               Nova senha
               <input
