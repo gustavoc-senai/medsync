@@ -300,7 +300,7 @@ export default function UsersPage({
           <h2>Convidar usuário</h2>
           <p>
             Uma equipe conectada começa com um convite. A pessoa define a
-            própria senha pelo e-mail.
+            própria senha pelo e-mail e confirma se deseja entrar na clínica.
           </p>
           <form onSubmit={invite} className="users-form">
             <label className="field-label">

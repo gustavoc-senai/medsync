@@ -59,6 +59,8 @@ Registros clínicos novos exigem a seleção do profissional responsável. Para 
 
 ## Convites e e-mails
 
+Em `/aceitar-convite`, a pessoa define a senha, marca a confirmação de que deseja entrar na clínica e clica em **Aceitar convite e entrar na clínica**. A função existente `medsync_accept_invitations` só é chamada após esse envio. Sem sessão válida, a página orienta abrir o link do e-mail. A validação definitiva do convite e a criação do vínculo continuam sob responsabilidade dessa função no banco.
+
 O envio utiliza a Edge Function `invite-user` e o Supabase Auth. A função valida a sessão e o papel administrativo na organização antes de usar as credenciais de servidor. Nunca coloque uma chave secret/service_role em variável VITE.
 
 O ambiente da função usa `APP_URL` como endereço do aplicativo. Configure no Supabase Auth a URL do site e os redirects `/aceitar-convite`, `/redefinir-senha` e `/onboarding`. O endereço deve refletir a porta real do desenvolvimento; em produção, use o domínio publicado. Um link `localhost` só aponta para o computador de quem abre o convite.

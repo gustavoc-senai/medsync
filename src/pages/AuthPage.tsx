@@ -53,10 +53,23 @@ export default function AuthPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [invitationSession, setInvitationSession] = useState<"loading" | "ready" | "invalid">("loading");
+  useEffect(() => {
+    if (!invitation) return;
+    let active = true;
+    void supabase.auth.getUser().then(({ data, error }) => {
+      if (active) setInvitationSession(!error && data.user ? "ready" : "invalid");
+    }).catch(() => {
+      if (active) setInvitationSession("invalid");
+    });
+    return () => { active = false; };
+  }, [invitation]);
   const title = signup
     ? "Comece pelo essencial."
     : recovery
       ? "Recuperar senha"
+      : invitation
+        ? "Você foi convidado para uma clínica"
       : reset
         ? "Defina sua senha"
         : "Bem-vindo ao MedSync";
@@ -70,6 +83,9 @@ export default function AuthPage() {
     setError("");
     setMessage("");
     try {
+      if (invitation && (invitationSession !== "ready" || form.get("acceptClinic") !== "on")) {
+        throw new Error("Abra o link recebido por e-mail e confirme que deseja entrar na clínica.");
+      }
       if (recovery) {
         const { error } = await supabase.auth.resetPasswordForEmail(email, {
           redirectTo: `${location.origin}/redefinir-senha`,
@@ -179,11 +195,22 @@ export default function AuthPage() {
               ? "O primeiro passo para uma clínica mais organizada."
               : recovery
                 ? "Vamos enviar as instruções para você recuperar o acesso."
+                : invitation
+                  ? "Defina sua senha e confirme abaixo que deseja fazer parte da clínica que enviou este convite."
                 : reset
                   ? "Crie uma senha para acessar seu espaço com tranquilidade."
                   : "Entre na sua conta para continuar de onde parou."}
           </p>
-          <form key={pathname} onSubmit={submit} className="auth-form">
+          {invitation && invitationSession === "loading" && (
+            <p role="status">Verificando seu convite...</p>
+          )}
+          {invitation && invitationSession === "invalid" && (
+            <p role="alert" className="feedback feedback-error">
+              Este link de convite está inválido ou expirou. Abra o link recebido
+              por e-mail ou peça ajuda ao administrador da clínica.
+            </p>
+          )}
+          {(!invitation || invitationSession === "ready") && <form key={pathname} onSubmit={submit} className="auth-form">
             {signup && (
               <label className="field-label">
                 Nome completo
@@ -249,6 +276,12 @@ export default function AuthPage() {
                 )}
               </label>
             )}
+            {invitation && (
+              <label className="invitation-confirmation">
+                <input type="checkbox" name="acceptClinic" required disabled={busy} />
+                <span>Confirmo que quero entrar na clínica que me enviou este convite.</span>
+              </label>
+            )}
             {error && (
               <p role="alert" className="feedback feedback-error">
                 {error}
@@ -267,6 +300,8 @@ export default function AuthPage() {
                 ? "Aguarde..."
                 : recovery
                   ? "Enviar link de recuperação"
+                  : invitation
+                    ? "Aceitar convite e entrar na clínica"
                   : reset
                     ? "Salvar senha"
                     : signup
@@ -274,10 +309,12 @@ export default function AuthPage() {
                       : "Entrar no workspace"}
               {!busy && <ArrowRight size={17} />}
             </button>
-          </form>
+          </form>}
           <p className="auth-alternate">
             {signup
               ? "Já tem uma conta?"
+              : invitation
+                ? "Prefere decidir depois?"
               : recovery || reset
                 ? "Lembrou sua senha?"
                 : "Ainda não tem uma conta?"}{" "}

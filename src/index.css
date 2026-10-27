@@ -3566,3 +3566,17 @@ textarea.form-input {
     font-size: 22px;
   }
 }
+.invitation-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.invitation-confirmation input {
+  margin-top: 5px;
+  flex-shrink: 0;
+  accent-color: #0d9488;
+}
