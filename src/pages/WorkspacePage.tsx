@@ -99,6 +99,21 @@ export default function WorkspacePage() {
         .select("organization_id,role")
         .eq("user_id", auth.user.id);
       if (error) throw error;
+      const { data: portalMemberships, error: portalError } = await supabase
+        .from("medsync_memberships")
+        .select("organization_id,role")
+        .eq("user_id", auth.user.id);
+      if (portalError && !["42P01", "PGRST205"].includes(portalError.code)) throw portalError;
+      const conflictingRole = members?.some((member) =>
+        portalMemberships?.some((portal) =>
+          portal.organization_id === member.organization_id &&
+          ["patient", "professional", "receptionist"].includes(String(portal.role)) &&
+          String(portal.role) !== String(member.role),
+        ),
+      );
+      if (conflictingRole) throw new Error(
+        "Esta conta tem perfis conflitantes na clínica. O administrador precisa revisar organization_members e medsync_memberships antes de liberar o acesso.",
+      );
       if (!members?.length) {
         const { data: invitedMembership, error: membershipError } =
           await supabase
@@ -445,7 +460,18 @@ export default function WorkspacePage() {
         Preparando seu workspace...
       </div>
     );
-  if (!organization.error && !organization.data)
+  if (organization.error) return (
+    <main className="app-loading">
+      <h1>Não foi possível liberar o acesso</h1>
+      <p role="alert">{failure(organization.error)}</p>
+      <button className="button button-primary" onClick={async () => {
+        await supabase.auth.signOut();
+        cache.clear();
+        navigate("/login");
+      }}>Sair da conta</button>
+    </main>
+  );
+  if (!organization.data)
     return <NavigateToOnboarding />;
   if (
     organization.data &&

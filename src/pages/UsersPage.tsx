@@ -301,6 +301,7 @@ export default function UsersPage({
           <p>
             Uma equipe conectada começa com um convite. A pessoa define a
             própria senha pelo e-mail e confirma se deseja entrar na clínica.
+            Para reenviar um convite pendente, informe novamente o mesmo e-mail e perfil.
           </p>
           <form onSubmit={invite} className="users-form">
             <label className="field-label">

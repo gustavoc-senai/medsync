@@ -77,7 +77,7 @@ A função local inclui códigos de erro detalhados e logs do servidor. Para dis
 - Listas de registros carregam no máximo 1.000 itens, com indicação ao atingir esse limite. Busca, indicadores, relatórios e CSV consideram os dados carregados. O histórico de convites carrega 100 itens.
 - Recebimentos no fluxo de caixa são pagamentos marcados como pagos; despesas são contas a pagar marcadas como pagas. Contas a receber são separadas para evitar somar o mesmo recebimento duas vezes.
 - Auditoria clínica, versionamento de prontuário, notificações externas, MFA e gestão de assinaturas continuam fora desta implementação.
-- Convites para contas já existentes no Auth, reenvio e revogação por interface ainda requerem um fluxo específico.
+- Convites pendentes podem ser reenviados pelo formulário usando o mesmo e-mail e perfil, reutilizando o registro existente. Falhas no reenvio preservam o convite anterior. Os limites de envio do Supabase/SMTP continuam valendo. Contas com e-mail já confirmado no Auth e revogação por interface ainda requerem um fluxo específico.
 - A seleção da organização usa o primeiro vínculo encontrado. Não foi acrescentado um seletor de múltiplas organizações.
 
 ## Validação

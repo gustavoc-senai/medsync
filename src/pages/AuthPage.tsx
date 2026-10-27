@@ -9,7 +9,7 @@ import {
   HeartPulse,
   LockKeyhole,
 } from "lucide-react";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../lib/supabase";
@@ -20,12 +20,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<"loading" | "in" | "out">("loading");
   const location = useLocation();
   const cache = useQueryClient();
+  const sessionUserId = useRef<string | null>(null);
   useEffect(() => {
     void supabase.auth
       .getSession()
-      .then(({ data }) => setState(data.session ? "in" : "out"));
+      .then(({ data }) => {
+        const userId = data.session?.user.id || null;
+        if (sessionUserId.current !== userId) cache.clear();
+        sessionUserId.current = userId;
+        setState(data.session ? "in" : "out");
+      });
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "SIGNED_OUT") cache.clear();
+      const userId = session?.user.id || null;
+      if (event === "SIGNED_OUT" || sessionUserId.current !== userId) cache.clear();
+      sessionUserId.current = userId;
       setState(session ? "in" : "out");
     });
     return () => data.subscription.unsubscribe();
@@ -45,6 +53,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 export default function AuthPage() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
+  const cache = useQueryClient();
   const signup = pathname === "/cadastro";
   const recovery = pathname === "/recuperar-senha";
   const invitation = pathname === "/aceitar-convite";
@@ -106,6 +115,7 @@ export default function AuthPage() {
               "Senha salva, mas não foi possível aceitar o vínculo com a clínica. Tente salvar novamente ou contate o administrador.",
             );
         }
+        cache.clear();
         navigate("/app/dashboard", { replace: true });
       } else if (signup) {
         const { data, error } = await supabase.auth.signUp({
@@ -126,6 +136,7 @@ export default function AuthPage() {
           password,
         });
         if (error) throw error;
+        cache.clear();
         navigate("/app/dashboard", { replace: true });
       }
     } catch (e) {

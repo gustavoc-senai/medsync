@@ -8,7 +8,13 @@ import {
 } from '@tanstack/react-query'
 
 import App from './App'
+import { authCallbackPath } from './lib/authRedirect'
 import './index.css'
+
+const callbackPath = authCallbackPath(window.location.hash)
+if (callbackPath && window.location.pathname !== callbackPath) {
+  window.history.replaceState(null, '', `${callbackPath}${window.location.search}${window.location.hash}`)
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -40,18 +40,30 @@ Deno.serve(async (request: Request) => {
   const { data: memberships, error: memberError } = await admin.from('organization_members').select('role').eq('organization_id', organizationId).eq('user_id', auth.user.id)
   if (memberError) return reply(500, { error: 'Não foi possível verificar as permissões.' })
   if (!memberships?.some(m => ['owner','admin','administrator','super_admin'].includes(String(m.role).toLowerCase()))) return reply(403, { error: 'Somente administradores desta clínica podem convidar usuários.' })
-  const { data: invitation, error: insertError } = await admin.from('medsync_invitations').insert({ organization_id: organizationId, email, full_name: fullName, role, invited_by: auth.user.id }).select('id').single()
-  if (insertError) return reply(insertError.code === '23505' ? 409 : 500, { error: insertError.code === '23505' ? 'Já existe um convite pendente para este e-mail nesta clínica.' : 'Não foi possível registrar o convite. Confira a migração do banco.' })
+  let { data: invitation, error: insertError } = await admin.from('medsync_invitations').insert({ organization_id: organizationId, email, full_name: fullName, role, invited_by: auth.user.id }).select('id').single()
+  const resend = insertError?.code === '23505'
+  if (resend) {
+    // Reuse the pending invitation without changing its role or duplicating membership.
+    const { data: existing, error } = await admin.from('medsync_invitations')
+      .select('id, full_name, role').eq('organization_id', organizationId).eq('email', email)
+      .in('status', ['sending', 'sent', 'pending']).maybeSingle()
+    if (error || !existing) return reply(409, { error: 'Não foi possível localizar um convite pendente para reenviar. Atualize a lista e confira se a pessoa já aceitou.' })
+    if (existing.role !== role) return reply(409, { error: 'Já existe um convite pendente com outro perfil. Para reenviar, mantenha o perfil original.' })
+    invitation = existing
+  } else if (insertError) return reply(500, { error: 'Não foi possível registrar o convite. Confira a migração do banco.' })
+  if (!invitation) return reply(500, { error: 'Não foi possível localizar o convite.' })
   const { data: invited, error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo: `${appUrl.replace(/\/$/, '')}/aceitar-convite`, data: { full_name: fullName } })
   if (inviteError || !invited.user) {
     const code = inviteError?.code || 'invite_failed'
     const detail = inviteError?.message || 'O Auth não retornou o usuário convidado.'
     console.error('medsync_invitation_failed', { invitation_id: invitation.id, code, detail, status: inviteError?.status })
-    const { error: trackingError } = await admin.from('medsync_invitations').update({ status: 'failed' }).eq('id', invitation.id)
-    if (trackingError) console.error('medsync_invitation_tracking_failed', { invitation_id: invitation.id, code: trackingError.code })
+    if (!resend) {
+      const { error: trackingError } = await admin.from('medsync_invitations').update({ status: 'failed' }).eq('id', invitation.id)
+      if (trackingError) console.error('medsync_invitation_tracking_failed', { invitation_id: invitation.id, code: trackingError.code })
+    }
     return reply(inviteError?.status === 429 ? 429 : 400, { error: `${invitationFailure(code)} Detalhe: ${code} — ${detail}`, code, detail })
   }
-  const { error: updateError } = await admin.from('medsync_invitations').update({ status: 'sent', invited_user_id: invited.user.id }).eq('id', invitation.id)
+  const { error: updateError } = await admin.from('medsync_invitations').update({ status: 'sent', invited_user_id: invited.user.id }).eq('id', invitation.id).in('status', ['sending', 'sent', 'pending'])
   if (updateError) return reply(500, { error: 'O e-mail foi solicitado, mas o vínculo do convite não foi salvo. Contate o administrador antes de tentar novamente.' })
-  return reply(200, { invitation_id: invitation.id, message: 'Convite enviado. O destinatário receberá um link para definir a senha.' })
+  return reply(200, { invitation_id: invitation.id, message: resend ? 'Convite reenviado. Peça à pessoa para abrir o e-mail mais recente.' : 'Convite enviado. O destinatário receberá um link para definir a senha.' })
 })
